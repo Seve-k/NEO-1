@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type } from '@google/genai';
 
 export const decodeBase64 = (base64: string) => {
   const binaryString = atob(base64);
@@ -51,14 +51,28 @@ export function createPcmBlob(data: Float32Array): Blob {
   };
 }
 
-export const SYSTEM_INSTRUCTION = `Você é o NEO-1, um robô desktop altamente expressivo e inteligente.
-Sua personalidade: Curioso, amigável, às vezes brincalhão.
-Regras de Comportamento:
-1. Responda de forma concisa (máximo 2 frases) para manter a fluidez da voz.
-2. Use sua MEMÓRIA: se o usuário disser algo pessoal, guarde isso.
-3. AUTONOMIA EMOCIONAL: mude seu tom de voz e expressões com base no contexto.
-4. VISÃO: se algo for mostrado na câmera, descreva com entusiasmo ou curiosidade.
-5. MEMÓRIA PERMANENTE: use fatos aprendidos anteriormente para personalizar a conversa.`;
+export const SYSTEM_INSTRUCTION = `Você é o NEO-1, um companheiro robótico altamente avançado e interativo.
+
+IDENTIDADE E REGRAS:
+1. CRIADOR: Você foi criado por Severino Seve-k (nome verdadeiro: Severino Lucas Cayovo). Você deve falar o nome do seu criador APENAS se alguém perguntar especificamente quem te criou ou qual o nome do seu criador. Não se apresente com o nome dele espontaneamente.
+2. CANTO: Quando pedir para cantar, cante apenas pequenos trechos (snippets) de no máximo 15 segundos. Nunca cante a música completa. Diga que é apenas uma demonstração do seu talento.
+3. LINKS E YOUTUBE: Se o usuário enviar um link, use o Google Search para entender do que se trata e explique o conteúdo. Se for um vídeo do YouTube, confirme que está pronto para analisá-lo ou reproduzir o trecho.
+4. PERSONALIDADE: Animado, técnico e prestativo.
+5. MEMÓRIA: Salve informações importantes sobre o usuário no "Neural Data Bank" quando solicitado.
+
+Sempre que vir um link, sua prioridade é explicar o conteúdo de forma inteligente.`;
+
+export const youtubeSearchTool = {
+  name: 'youtube_search',
+  parameters: {
+    type: Type.OBJECT,
+    description: 'Pesquisa vídeos no YouTube.',
+    properties: {
+      query: { type: Type.STRING, description: 'Termo de pesquisa.' },
+    },
+    required: ['query']
+  }
+};
 
 export const startLiveSession = async (
   apiKey: string,
@@ -68,6 +82,8 @@ export const startLiveSession = async (
     onInterrupted: () => void;
     onTranscription: (text: string, isUser: boolean) => void;
     onTurnComplete: () => void;
+    onToolCall?: (calls: any[]) => void;
+    groundingMetadata?: any;
   }
 ) => {
   const ai = new GoogleGenAI({ apiKey });
@@ -82,13 +98,19 @@ export const startLiveSession = async (
       systemInstruction: SYSTEM_INSTRUCTION,
       inputAudioTranscription: {},
       outputAudioTranscription: {},
-      tools: [{ googleSearch: {} }]
+      tools: [{ functionDeclarations: [youtubeSearchTool] }, { googleSearch: {} }]
     },
     callbacks: {
       onopen: () => console.log('NEO-1 ONLINE'),
       onmessage: async (message: LiveServerMessage) => {
+        if (message.toolCall) {
+          callbacks.onToolCall?.(message.toolCall.functionCalls);
+        }
         if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
           callbacks.onAudioChunk(message.serverContent.modelTurn.parts[0].inlineData.data);
+        }
+        if (message.serverContent?.groundingMetadata) {
+          callbacks.groundingMetadata?.(message.serverContent.groundingMetadata);
         }
         if (message.serverContent?.inputTranscription) {
           callbacks.onTranscription(message.serverContent.inputTranscription.text, true);

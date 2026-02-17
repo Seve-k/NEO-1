@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GoogleGenAI } from "@google/genai";
-import { Mood, ChatMessage, RobotState, InteractionMode, MemoryItem } from './types';
-import RobotFace from './components/RobotFace';
+import { Mood, ChatMessage, RobotState, InteractionMode, MemoryItem, YouTubeResult, DanceStyle, ThemeMode } from './types';
+import RobotBody from './components/RobotBody';
 import { 
   startLiveSession, 
   decodeBase64, 
@@ -12,29 +11,42 @@ import {
 
 const App: React.FC = () => {
   const [robot, setRobot] = useState<RobotState>(() => {
-    const savedMemory = localStorage.getItem('neo-memory');
-    const savedSettings = localStorage.getItem('neo-settings');
+    const savedMemory = localStorage.getItem('neo-db-v5');
+    const savedSettings = localStorage.getItem('neo-config-v5');
+    const defaultSettings = { 
+      robotSfx: true, 
+      voiceName: 'Kore', 
+      faceTracking: true,
+      uiTheme: '#050505',
+      themeMode: 'dark' as ThemeMode,
+      neoColor: '#22d3ee',
+      autoColor: true,
+      interactionMode: 'full' as InteractionMode
+    };
+    
     return {
       isAwake: false,
       mood: 'neutral',
       battery: 100,
       isListening: false,
       isProcessing: false,
-      interactionMode: 'voice',
       memory: savedMemory ? JSON.parse(savedMemory) : [],
-      settings: savedSettings ? JSON.parse(savedSettings) : { robotSfx: true, voiceName: 'Kore', faceTracking: true }
+      danceStyle: 'classic',
+      settings: savedSettings ? { ...defaultSettings, ...JSON.parse(savedSettings) } : defaultSettings
     };
   });
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [textInput, setTextInput] = useState('');
-  const [isConnecting, setIsConnecting] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [trackingPos, setTrackingPos] = useState({ x: 0, y: 0 });
   const [showSettings, setShowSettings] = useState(false);
-  const [showMemory, setShowMemory] = useState(false);
-  const [showCamera, setShowCamera] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
+  const [isDancing, setIsDancing] = useState(false);
+  const [isSinging, setIsSinging] = useState(false);
+  const [activeVideo, setActiveVideo] = useState<string | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [commandInput, setCommandInput] = useState('');
+  const [isMicMuted, setIsMicMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
@@ -42,137 +54,77 @@ const App: React.FC = () => {
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const frameRequestRef = useRef<number>(0);
 
-  // Persistence
-  useEffect(() => {
-    localStorage.setItem('neo-memory', JSON.stringify(robot.memory));
-  }, [robot.memory]);
+  const isDark = robot.settings.themeMode === 'dark';
 
   useEffect(() => {
-    localStorage.setItem('neo-settings', JSON.stringify(robot.settings));
-  }, [robot.settings]);
+    localStorage.setItem('neo-db-v5', JSON.stringify(robot.memory));
+    localStorage.setItem('neo-config-v5', JSON.stringify(robot.settings));
+  }, [robot.memory, robot.settings]);
 
-  useEffect(() => {
-    if (showHistory) {
-      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const updateFaceTracking = useCallback(() => {
+    if (robot.isAwake && robot.settings.faceTracking) {
+      const time = Date.now() / 2000;
+      setTrackingPos({
+        x: Math.sin(time) * 0.4,
+        y: Math.cos(time * 0.8) * 0.2
+      });
     }
-  }, [messages, showHistory]);
-
-  // Eye Tracking Logic: Mouse + Camera Activity Simulation
-  useEffect(() => {
-    if (!robot.isAwake || !robot.settings.faceTracking) return;
-    
-    const updateTracking = (e: MouseEvent) => {
-      // Normalize to -1 to 1 range
-      const x = (e.clientX / window.innerWidth - 0.5) * 2;
-      const y = (e.clientY / window.innerHeight - 0.5) * 2;
-      // Damping for smooth movement
-      setTrackingPos({ x: x * 0.7, y: y * 0.7 });
-    };
-
-    window.addEventListener('mousemove', updateTracking);
-    return () => window.removeEventListener('mousemove', updateTracking);
+    frameRequestRef.current = requestAnimationFrame(updateFaceTracking);
   }, [robot.isAwake, robot.settings.faceTracking]);
 
-  const playSfx = (type: 'on' | 'off' | 'process' | 'chirp') => {
-    if (!robot.settings.robotSfx) return;
-    try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      
-      if (type === 'on') { 
-        osc.type = 'square'; 
-        osc.frequency.setValueAtTime(440, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1);
-      } else if (type === 'off') {
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.1);
-      } else if (type === 'process') {
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(1200, ctx.currentTime);
-      } else {
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(600, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(1000, ctx.currentTime + 0.05);
-      }
-      
-      gain.gain.setValueAtTime(0.05, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-      osc.start(); osc.stop(ctx.currentTime + 0.2);
-    } catch (e) { console.warn("SFX blocked by browser"); }
-  };
-
-  const analyzeMood = (text: string) => {
-    const lower = text.toLowerCase();
-    if (lower.includes('feliz') || lower.includes('incrível') || lower.includes('ótimo') || lower.includes('sim')) return 'happy';
-    if (lower.includes('triste') || lower.includes('ruim') || lower.includes('não')) return 'confused';
-    if (lower.includes('raiva') || lower.includes('chato') || lower.includes('pare')) return 'angry';
-    if (lower.includes('legal') || lower.includes('irado') || lower.includes('top')) return 'cool';
-    if (lower.includes('uau') || lower.includes('surpresa') || lower.includes('caramba')) return 'surprised';
-    if (lower.includes('te amo') || lower.includes('coração') || lower.includes('gosto')) return 'love';
-    if (lower.includes('pensando') || lower.includes('hum')) return 'thinking';
-    return 'neutral';
-  };
+  useEffect(() => {
+    frameRequestRef.current = requestAnimationFrame(updateFaceTracking);
+    return () => cancelAnimationFrame(frameRequestRef.current);
+  }, [updateFaceTracking]);
 
   const addMessage = useCallback((text: string, role: 'user' | 'bot') => {
-    setMessages(prev => [...prev.slice(-50), { text, role, timestamp: new Date() }]);
+    setMessages(prev => [...prev.slice(-20), { text, role, timestamp: new Date() }]);
     if (role === 'bot') {
-      const newMood = analyzeMood(text);
-      setRobot(prev => ({ ...prev, mood: newMood, isProcessing: false }));
-      
-      // Auto-memory detection (Simulated)
-      if (text.toLowerCase().includes('lembre') || text.toLowerCase().includes('aprendi')) {
-        const fact = text.substring(0, 50) + "...";
-        setRobot(p => ({ ...p, memory: [...p.memory, { id: Date.now().toString(), fact, timestamp: Date.now() }] }));
+      const lower = text.toLowerCase();
+      if (lower.includes('cantando')) {
+        setIsSinging(true);
+        setTimeout(() => setIsSinging(false), 15000);
       }
+      if (lower.includes('dança') || lower.includes('dançando')) {
+        setIsDancing(true);
+        const styles: DanceStyle[] = ['classic', 'shuffle', 'robotic', 'vibing'];
+        setRobot(p => ({ ...p, danceStyle: styles[Math.floor(Math.random() * styles.length)] }));
+      } else if (!activeVideo) {
+        setIsDancing(false);
+      }
+      setRobot(p => ({ ...p, isProcessing: false, mood: 'happy' }));
     } else {
-      setRobot(prev => ({ ...prev, isProcessing: true, mood: 'thinking' }));
+      setRobot(p => ({ ...p, isProcessing: true, mood: 'thinking' }));
     }
-  }, []);
+  }, [activeVideo]);
 
   const handleWake = async () => {
     setIsConnecting(true);
-    playSfx('on');
     try {
-      // Ensure AudioContexts are initialized and resumed
-      if (!outputAudioCtxRef.current) {
-        outputAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      }
-      if (outputAudioCtxRef.current.state === 'suspended') {
-        await outputAudioCtxRef.current.resume();
-      }
+      if (!outputAudioCtxRef.current) outputAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      await outputAudioCtxRef.current.resume();
+      await audioCtxRef.current.resume();
 
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      }
-      if (audioCtxRef.current.state === 'suspended') {
-        await audioCtxRef.current.resume();
-      }
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: true, 
+        video: { facingMode: 'user', width: 640 } 
+      });
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
       if (videoRef.current) videoRef.current.srcObject = stream;
-      
+
       const session = await startLiveSession(process.env.API_KEY || '', robot.settings.voiceName, {
         onAudioChunk: async (base64) => {
+          if (robot.settings.interactionMode === 'text_only') return;
           const ctx = outputAudioCtxRef.current!;
-          if (ctx.state === 'suspended') await ctx.resume();
-          
           nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
           const audioBuffer = await decodeAudioData(decodeBase64(base64), ctx, 24000, 1);
           const source = ctx.createBufferSource();
           source.buffer = audioBuffer;
           source.connect(ctx.destination);
-          
-          source.onended = () => {
-             sourcesRef.current.delete(source);
-             if (sourcesRef.current.size === 0) {
-               setRobot(p => ({ ...p, isProcessing: false }));
-             }
-          };
+          source.onended = () => sourcesRef.current.delete(source);
           source.start(nextStartTimeRef.current);
           nextStartTimeRef.current += audioBuffer.duration;
           sourcesRef.current.add(source);
@@ -181,24 +133,29 @@ const App: React.FC = () => {
           sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
           sourcesRef.current.clear();
           nextStartTimeRef.current = 0;
-          setRobot(p => ({ ...p, isProcessing: false }));
+          setIsSinging(false);
         },
         onTranscription: (text, isUser) => addMessage(text, isUser ? 'user' : 'bot'),
-        onTurnComplete: () => {
-          playSfx('chirp');
+        onTurnComplete: () => setRobot(p => ({ ...p, isProcessing: false })),
+        onToolCall: (calls) => {
+          calls.forEach(call => {
+            if (call.name === 'youtube_search') {
+               sessionRef.current?.sendToolResponse({
+                functionResponses: [{ id: call.id, name: call.name, response: { status: 'Searching...' } }]
+              });
+            }
+          });
         }
       });
 
-      // Mic Stream
       const micSource = audioCtxRef.current.createMediaStreamSource(stream);
       const processor = audioCtxRef.current.createScriptProcessor(4096, 1, 1);
       processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        let sum = 0;
-        for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
-        setAudioLevel(Math.sqrt(sum / inputData.length));
-        if (session && robot.interactionMode === 'voice') {
-          session.sendRealtimeInput({ media: createPcmBlob(inputData) });
+        const data = e.inputBuffer.getChannelData(0);
+        let sum = 0; for(let i=0; i<data.length; i++) sum += data[i]*data[i];
+        setAudioLevel(Math.sqrt(sum/data.length));
+        if (session && robot.settings.interactionMode === 'full' && !isMicMuted) {
+          session.sendRealtimeInput({ media: createPcmBlob(data) });
         }
       };
       micSource.connect(processor);
@@ -207,268 +164,257 @@ const App: React.FC = () => {
       sessionRef.current = session;
       setRobot(prev => ({ ...prev, isAwake: true, mood: 'happy' }));
     } catch (err) {
-      console.error("Wake Error:", err);
-      alert("Erro ao acessar hardware. Verifique as permissões de câmera e microfone.");
+      alert("Erro ao conectar com o Nexus.");
     } finally {
       setIsConnecting(false);
     }
   };
 
   const handleSleep = () => {
-    playSfx('off');
-    if (sessionRef.current) {
-      try { sessionRef.current.close(); } catch(e) {}
-    }
+    sessionRef.current?.close();
     sessionRef.current = null;
     const stream = videoRef.current?.srcObject as MediaStream;
     stream?.getTracks().forEach(t => t.stop());
     setRobot(prev => ({ ...prev, isAwake: false, mood: 'sleepy' }));
+    setActiveVideo(null);
   };
 
-  const handleTextSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!textInput.trim() || robot.isProcessing) return;
-    const userMsg = textInput;
-    setTextInput('');
-    addMessage(userMsg, 'user');
+  const handleCommand = (e?: React.FormEvent, manualText?: string) => {
+    e?.preventDefault();
+    const input = manualText || commandInput.trim();
+    if (!input || !sessionRef.current) return;
+    
+    addMessage(input, 'user');
+    
+    const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+    const match = input.match(ytRegex);
 
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-      const resp = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: userMsg,
-        config: { systemInstruction: "Você é o NEO-1. Responda de forma curta e robótica." }
-      });
-      addMessage(resp.text || "...", 'bot');
-    } catch (e) { 
-      addMessage("Falha na conexão neural...", 'bot');
-      setRobot(p => ({...p, isProcessing: false, mood: 'confused'}));
+    if (match && match[1]) {
+      setActiveVideo(match[1]);
+      sessionRef.current.sendRealtimeInput({ text: `Entendido! Iniciando reprodução do vídeo do YouTube para você.` });
+    } else {
+      sessionRef.current.sendRealtimeInput({ text: input });
     }
+    setCommandInput('');
   };
+
+  const toggleTheme = () => {
+    setRobot(p => {
+      const newMode = p.settings.themeMode === 'dark' ? 'light' : 'dark';
+      return {
+        ...p,
+        settings: {
+          ...p.settings,
+          themeMode: newMode,
+          uiTheme: newMode === 'dark' ? '#050505' : '#f9fafb'
+        }
+      };
+    });
+  };
+
+  const suggestions = [
+    { label: "Cante", cmd: "Cante uma música" },
+    { label: "Dance", cmd: "Dance para mim" },
+    { label: "Piada", cmd: "Me conte uma piada" },
+    { label: "YouTube IA", cmd: "Pesquise no YouTube sobre IA" }
+  ];
 
   return (
-    <div className="min-h-screen bg-[#020202] text-zinc-300 font-mono flex flex-col items-center justify-center p-4 overflow-hidden relative">
-      {/* Visual Ambiance */}
-      <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_50%_50%,#0891b2,transparent)] pointer-events-none"></div>
+    <div className={`min-h-screen w-full flex flex-col items-center relative overflow-hidden transition-all duration-700 p-4 md:p-8 ${isDark ? 'text-white' : 'text-zinc-900'}`} style={{ backgroundColor: robot.settings.uiTheme }}>
+      <div className={`scanline ${isDark ? 'opacity-10' : 'opacity-5'} pointer-events-none`}></div>
       
-      <div className="w-full max-w-7xl grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
+      {/* Settings Gear - Positioned safely away from other elements */}
+      <button 
+        onClick={() => setShowSettings(true)}
+        className={`fixed top-4 right-4 w-12 h-12 rounded-full ${isDark ? 'bg-zinc-900/80 border-zinc-800 text-zinc-400' : 'bg-white/80 border-zinc-200 text-zinc-500'} backdrop-blur-md border flex items-center justify-center hover:text-cyan-500 hover:scale-110 transition-all shadow-lg z-50`}
+      >
+        <i className="fas fa-cog text-lg"></i>
+      </button>
+
+      {/* Camera Feed - Moved to bottom right to avoid overlap with gear and header */}
+      <video 
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        muted 
+        className={`fixed bottom-4 right-4 w-24 md:w-40 aspect-video rounded-2xl object-cover grayscale opacity-40 border shadow-2xl transition-all pointer-events-none z-40 ${isCameraOff || !robot.isAwake ? 'invisible' : 'visible'} ${isDark ? 'border-zinc-800' : 'border-zinc-200'}`} 
+      />
+
+      {/* Main Content Area */}
+      <div className="flex-1 w-full flex flex-col items-center justify-center relative z-10 space-y-4 md:space-y-8 max-w-lg mx-auto">
         
-        {/* Left: Quick Actions */}
-        <div className="lg:col-span-2 flex flex-col gap-3">
-          <ToolBtn active={showMemory} onClick={() => setShowMemory(!showMemory)} icon="brain" label="Memória" />
-          <ToolBtn active={showSettings} onClick={() => setShowSettings(!showSettings)} icon="sliders" label="Config" />
-          <ToolBtn active={showCamera} onClick={() => setShowCamera(!showCamera)} icon={showCamera ? "video" : "video-slash"} label="Câmera" />
-          <ToolBtn active={showHistory} onClick={() => setShowHistory(!showHistory)} icon="message" label="Histórico" />
-          
-          {/* Camera Feed Popup */}
-          {showCamera && (
-            <div className="mt-4 bg-zinc-900 border border-zinc-800 p-2 rounded-2xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
-               <div className="aspect-video bg-black rounded-xl overflow-hidden relative">
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1] opacity-40 grayscale" />
-                  <div className="absolute inset-0 bg-cyan-500/5 mix-blend-overlay"></div>
-               </div>
-            </div>
-          )}
+        {/* NEO-1 Body */}
+        <div className="relative w-full aspect-square flex items-center justify-center -mt-8 md:mt-0">
+          <RobotBody 
+            mood={robot.isAwake ? robot.mood : 'sleepy'} 
+            isProcessing={robot.isProcessing} 
+            audioLevel={audioLevel}
+            trackingPos={trackingPos}
+            isDancing={isDancing || !!activeVideo}
+            isSinging={isSinging}
+            customColor={robot.settings.neoColor}
+            autoColor={robot.settings.autoColor}
+            battery={Math.floor(robot.battery)}
+            danceStyle={robot.danceStyle}
+          />
         </div>
 
-        {/* Center: The Robot (NEO-1) */}
-        <div className="lg:col-span-8 flex flex-col items-center justify-center space-y-10">
-          <div className="relative group">
-            <div className={`w-72 h-72 md:w-[520px] md:h-[520px] transition-all duration-1000 ${robot.isAwake ? 'scale-100' : 'scale-90 opacity-20 blur-md grayscale'}`}>
-              <RobotFace 
-                mood={robot.isAwake ? robot.mood : 'sleepy'} 
-                isProcessing={robot.isProcessing} 
-                audioLevel={audioLevel}
-                trackingPos={trackingPos}
+        {/* Interaction Controls - BELOW NEO-1 */}
+        {robot.isAwake ? (
+          <div className="w-full flex flex-col items-center gap-4 animate-in slide-in-from-bottom-5 duration-500">
+            
+            {/* Search/Command Box */}
+            <form onSubmit={handleCommand} className="w-full relative px-2">
+              <input 
+                type="text" 
+                value={commandInput}
+                onChange={(e) => setCommandInput(e.target.value)}
+                placeholder="Diga algo ou cole um link..."
+                className={`w-full ${isDark ? 'bg-zinc-900/90 border-zinc-800 text-white' : 'bg-white/90 border-zinc-200 text-zinc-900'} backdrop-blur-xl border rounded-2xl py-3 px-6 text-sm focus:outline-none focus:border-cyan-500 transition-all pr-12 shadow-xl`}
               />
-            </div>
-            {/* Glow Base */}
-            <div className={`absolute -bottom-12 left-1/2 -translate-x-1/2 w-3/4 h-12 bg-cyan-500/10 blur-[80px] rounded-full transition-opacity duration-1000 ${robot.isAwake ? 'opacity-100' : 'opacity-0'}`}></div>
-          </div>
+              <button type="submit" className="absolute right-4 top-1.5 w-8 h-8 bg-cyan-500 text-black rounded-lg flex items-center justify-center hover:scale-105 transition-transform">
+                <i className="fas fa-paper-plane text-xs"></i>
+              </button>
+            </form>
 
-          <div className="w-full max-w-md space-y-6">
-            {!robot.isAwake ? (
-              <button 
+            {/* Small Compact Action Buttons */}
+            <div className="flex flex-wrap justify-center gap-2 px-2">
+              <MiniButton active={isMicMuted} onClick={() => setIsMicMuted(!isMicMuted)} icon={isMicMuted ? "microphone-slash" : "microphone"} label="Mic" danger={isMicMuted} isDark={isDark} />
+              <MiniButton active={isCameraOff} onClick={() => setIsCameraOff(!isCameraOff)} icon={isCameraOff ? "video-slash" : "video"} label="Cam" danger={isCameraOff} isDark={isDark} />
+              <MiniButton active={robot.settings.interactionMode === 'text_only'} onClick={() => setRobot(p => ({...p, settings: {...p.settings, interactionMode: p.settings.interactionMode === 'full' ? 'text_only' : 'full'}}))} icon="keyboard" label="Chat" isDark={isDark} />
+              <MiniButton active={false} onClick={handleSleep} icon="power-off" label="Desligar" danger isDark={isDark} />
+            </div>
+
+            {/* Suggestions */}
+            <div className="flex flex-wrap justify-center gap-2 mt-2">
+              {suggestions.map((s, i) => (
+                <button 
+                  key={i} 
+                  onClick={() => handleCommand(undefined, s.cmd)}
+                  className={`px-3 py-1.5 ${isDark ? 'bg-zinc-900/50 border-zinc-800 text-zinc-500' : 'bg-white border-zinc-200 text-zinc-400'} border rounded-lg text-[9px] font-black uppercase hover:text-cyan-500 transition-all shadow-sm`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-4">
+             <button 
                 onClick={handleWake} 
                 disabled={isConnecting}
-                className="w-full py-5 bg-white text-black rounded-[3rem] font-black uppercase tracking-[0.3em] text-sm hover:bg-cyan-400 transition-all shadow-2xl shadow-white/10 active:scale-95 flex items-center justify-center gap-3"
+                className={`px-10 py-4 ${isDark ? 'bg-white text-black' : 'bg-zinc-900 text-white'} rounded-full font-black uppercase tracking-[0.3em] text-xs hover:scale-110 active:scale-95 transition-all shadow-2xl shadow-cyan-500/10`}
               >
-                {isConnecting ? <i className="fas fa-sync animate-spin"></i> : <i className="fas fa-power-off"></i>}
-                {isConnecting ? 'CONECTANDO...' : 'ATUALIZAR NEO-1'}
+                {isConnecting ? 'CONECTANDO...' : 'LIGAR NEO-1'}
               </button>
-            ) : (
-              <div className="space-y-4 animate-in fade-in slide-in-from-bottom-6 duration-500">
-                <div className="flex justify-center gap-2">
-                  <ModeToggle active={robot.interactionMode === 'voice'} onClick={() => setRobot(p => ({...p, interactionMode: 'voice'}))} icon="microphone" label="VOZ" />
-                  <ModeToggle active={robot.interactionMode === 'text'} onClick={() => setRobot(p => ({...p, interactionMode: 'text'}))} icon="font" label="TEXTO" />
-                  <button onClick={handleSleep} className="px-6 py-2 bg-red-950/20 border border-red-900/40 text-red-500 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500/10">DESLIGAR</button>
-                </div>
-                
-                {robot.interactionMode === 'text' && (
-                  <form onSubmit={handleTextSubmit} className="flex gap-2 group">
-                    <input 
-                      type="text" 
-                      value={textInput}
-                      onChange={(e) => setTextInput(e.target.value)}
-                      placeholder="Transmita comando..."
-                      className="flex-1 bg-zinc-900/60 border border-zinc-800 rounded-2xl px-6 py-3 text-sm focus:outline-none focus:border-cyan-500 transition-all placeholder:text-zinc-700"
-                    />
-                    <button className="w-12 bg-zinc-800 text-zinc-400 rounded-2xl hover:bg-cyan-500 hover:text-black transition-all"><i className="fas fa-chevron-right"></i></button>
-                  </form>
-                )}
-                
-                <div className="flex justify-center items-center gap-4 text-zinc-700">
-                   <div className="h-0.5 w-16 bg-zinc-900 rounded-full overflow-hidden">
-                      <div className="h-full bg-cyan-500 animate-[loading_2s_infinite]" style={{ width: robot.isProcessing ? '100%' : '20%' }}></div>
-                   </div>
-                   <span className="text-[9px] font-black uppercase tracking-[0.2em]">{robot.isProcessing ? 'PROCESSANDO_SINAL' : 'ESTADO_OK'}</span>
-                   <div className="h-0.5 w-16 bg-zinc-900 rounded-full overflow-hidden">
-                      <div className="h-full bg-cyan-500 animate-[loading_2s_infinite_reverse]" style={{ width: robot.isProcessing ? '100%' : '20%' }}></div>
-                   </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right: History (Drawer/Sidebar Style) */}
-        {showHistory && (
-          <div className="lg:col-span-2 fixed lg:relative right-4 top-24 bottom-24 lg:top-0 lg:bottom-0 w-80 lg:w-full z-40 bg-zinc-900/60 lg:bg-transparent backdrop-blur-2xl lg:backdrop-blur-none border border-zinc-800 lg:border-none rounded-[2rem] lg:rounded-none flex flex-col shadow-2xl animate-in slide-in-from-right-10 duration-300">
-            <div className="p-5 border-b border-zinc-800/50 flex justify-between items-center">
-              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">History_Log</span>
-              <button onClick={() => setMessages([])} className="text-[10px] text-zinc-800 hover:text-red-500"><i className="fas fa-trash"></i></button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-              {messages.length === 0 ? (
-                <div className="text-center py-20 opacity-10">
-                  <i className="fas fa-terminal text-4xl mb-4"></i>
-                  <p className="text-[10px] uppercase font-black">Null_Set</p>
-                </div>
-              ) : (
-                messages.map((m, i) => (
-                  <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                    <div className={`max-w-[90%] px-4 py-2 rounded-2xl text-[11px] leading-snug ${
-                      m.role === 'user' 
-                      ? 'bg-zinc-800 text-zinc-500' 
-                      : 'bg-cyan-500/10 text-cyan-200 border border-cyan-500/20'
-                    }`}>
-                      {m.text}
-                    </div>
-                  </div>
-                ))
-              )}
-              <div ref={chatEndRef} />
-            </div>
+              <span className={`text-[8px] font-black uppercase tracking-[0.5em] ${isDark ? 'text-zinc-800' : 'text-zinc-400'}`}>Versão Nexus 5.0</span>
           </div>
         )}
       </div>
 
-      {/* Overlays */}
-      {showMemory && (
-        <Overlay title="Banco Neural" onClose={() => setShowMemory(false)}>
-          <div className="space-y-2">
-            {robot.memory.length === 0 ? <p className="text-zinc-600 text-center py-10 italic">Nenhum dado persistente encontrado.</p> : 
-              robot.memory.map(m => (
-                <div key={m.id} className="p-3 bg-black/50 border border-zinc-800 rounded-2xl flex justify-between items-center group hover:border-cyan-500/40 transition-all">
-                  <p className="text-[11px] text-zinc-400 flex-1">{m.fact}</p>
-                  <button 
-                    onClick={() => setRobot(p => ({...p, memory: p.memory.filter(x => x.id !== m.id)}))}
-                    className="text-zinc-800 hover:text-red-500 ml-4"
-                  >
-                    <i className="fas fa-trash-alt text-xs"></i>
-                  </button>
-                </div>
-              ))
-            }
+      {/* YouTube Player Overlay - Improved Responsiveness */}
+      {activeVideo && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-300">
+          <div className={`w-full max-w-4xl ${isDark ? 'bg-zinc-950 border-zinc-800' : 'bg-white border-zinc-200'} border rounded-[2rem] overflow-hidden shadow-3xl relative flex flex-col`}>
+            <div className="flex justify-between items-center p-4 border-b border-zinc-800/20">
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Mídia Nexus Online</span>
+              <button 
+                onClick={() => setActiveVideo(null)} 
+                className="w-8 h-8 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center hover:bg-red-500 hover:text-white transition-all"
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+            <div className="aspect-video w-full bg-black">
+              <iframe 
+                width="100%" 
+                height="100%" 
+                src={`https://www.youtube.com/embed/${activeVideo}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1`}
+                title="NEO Media Player"
+                frameBorder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
           </div>
-        </Overlay>
+        </div>
       )}
 
+      {/* Settings Modal */}
       {showSettings && (
-        <Overlay title="System_Settings" onClose={() => setShowSettings(false)}>
-          <div className="space-y-6">
-            <Toggle label="Robot Sound Effects" active={robot.settings.robotSfx} onChange={() => setRobot(p => ({...p, settings: {...p.settings, robotSfx: !p.settings.robotSfx}}))} />
-            <Toggle label="Eye Tracking (Sim)" active={robot.settings.faceTracking} onChange={() => setRobot(p => ({...p, settings: {...p.settings, faceTracking: !p.settings.faceTracking}}))} />
-            <div className="space-y-3">
-              <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest block">Voice Core</span>
-              <div className="grid grid-cols-2 gap-2">
-                {['Kore', 'Puck', 'Fenrir', 'Charon'].map(v => (
-                  <button 
-                    key={v}
-                    onClick={() => setRobot(p => ({...p, settings: {...p.settings, voiceName: v}}))}
-                    className={`p-3 rounded-xl border text-[10px] font-black uppercase tracking-tighter transition-all ${robot.settings.voiceName === v ? 'bg-cyan-500 border-cyan-400 text-black' : 'bg-black border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}
-                  >
-                    {v}
-                  </button>
-                ))}
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 md:p-8 bg-black/95 backdrop-blur-3xl animate-in fade-in zoom-in duration-300">
+          <div className={`w-full max-w-lg ${isDark ? 'bg-zinc-950 border-zinc-800' : 'bg-white border-zinc-200'} border rounded-[3rem] p-8 md:p-10 shadow-3xl relative overflow-hidden flex flex-col max-h-[90vh]`}>
+            <div className="flex justify-between items-center mb-8">
+              <h2 className={`text-xl font-black uppercase tracking-[0.2em] ${isDark ? 'text-white' : 'text-zinc-900'}`}>Configuração de Núcleo</h2>
+              <button onClick={() => setShowSettings(false)} className={`w-10 h-10 rounded-full ${isDark ? 'bg-zinc-900 text-zinc-500' : 'bg-zinc-100 text-zinc-400'} flex items-center justify-center hover:text-cyan-500 transition-all`}><i className="fas fa-times"></i></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-8 pr-2 custom-scrollbar">
+              <section className="space-y-4">
+                <Toggle label="Modo Escuro" active={isDark} onChange={toggleTheme} isDark={isDark} />
+                <Toggle label="Rastreio Facial" active={robot.settings.faceTracking} onChange={() => setRobot(p => ({...p, settings: {...p.settings, faceTracking: !p.settings.faceTracking}}))} isDark={isDark} />
+                <Toggle label="Humor Adaptativo" active={robot.settings.autoColor} onChange={() => setRobot(p => ({...p, settings: {...p.settings, autoColor: !p.settings.autoColor}}))} isDark={isDark} />
+              </section>
+
+              <section className="space-y-4">
+                <h3 className="text-[9px] font-black uppercase text-zinc-500 tracking-widest">Espectro Cromático</h3>
+                <div className="flex flex-wrap gap-3">
+                  {['#22d3ee', '#f472b6', '#4ade80', '#ef4444', '#a855f7'].map(c => (
+                    <button 
+                      key={c} 
+                      onClick={() => setRobot(p => ({...p, settings: {...p.settings, neoColor: c, autoColor: false}}))} 
+                      className={`w-10 h-10 rounded-full border-4 transition-all ${robot.settings.neoColor === c ? 'border-cyan-500 scale-110' : isDark ? 'border-zinc-900' : 'border-zinc-100'}`} 
+                      style={{ backgroundColor: c }} 
+                    />
+                  ))}
+                </div>
+              </section>
+
+              <div className={`${isDark ? 'bg-zinc-900/40 border-zinc-800' : 'bg-zinc-50 border-zinc-200'} p-5 rounded-2xl border text-center`}>
+                <h4 className="text-[9px] font-black uppercase text-zinc-500 mb-1">Criador do Projeto</h4>
+                <p className={`text-xs font-bold ${isDark ? 'text-white' : 'text-zinc-900'}`}>Severino Lucas Cayovo (Seve-k)</p>
               </div>
             </div>
           </div>
-        </Overlay>
+        </div>
       )}
 
-      <footer className="mt-8 text-[9px] text-zinc-900 font-black uppercase tracking-[0.5em] hover:text-zinc-700 transition-colors pointer-events-none">
-        NEO-1 COMPANION // NEXUS_LINK_ACTIVE
+      <footer className={`fixed bottom-4 left-4 text-[6px] ${isDark ? 'text-zinc-800' : 'text-zinc-300'} font-black uppercase tracking-[0.5em] pointer-events-none`}>
+        NEO-1 // NEXUS_LINK_STABLE
       </footer>
 
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 3px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1f1f23; border-radius: 10px; }
-        @keyframes loading {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
-        }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: ${isDark ? '#27272a' : '#e5e7eb'}; border-radius: 10px; }
+        iframe { border-radius: 0; }
+        .ease-out-back { transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1); }
       `}</style>
     </div>
   );
 };
 
-/* Components */
-const ToolBtn = ({ active, onClick, icon, label }: any) => (
+const MiniButton = ({ active, onClick, icon, label, danger, isDark }: any) => (
   <button 
-    onClick={onClick}
-    className={`p-4 rounded-3xl border transition-all flex flex-col items-center justify-center gap-2 group ${active ? 'bg-cyan-500 border-cyan-400 text-black shadow-lg shadow-cyan-500/20' : 'bg-zinc-900/40 border-zinc-800 text-zinc-600 hover:border-zinc-700'}`}
+    onClick={onClick} 
+    className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-all ${
+      active 
+        ? 'bg-red-500 text-white border-red-400 shadow-lg' 
+        : isDark
+          ? 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:border-zinc-700'
+          : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-300 shadow-sm'
+    } ${danger && !active ? 'hover:text-red-500' : ''}`}
   >
-    <i className={`fas fa-${icon} text-lg`}></i>
-    <span className="text-[9px] font-black uppercase tracking-tighter">{label}</span>
+    <i className={`fas fa-${icon} text-[10px]`}></i>
+    <span className="text-[8px] font-black uppercase tracking-wider">{label}</span>
   </button>
 );
 
-const ModeToggle = ({ active, onClick, icon, label }: any) => (
-  <button 
-    onClick={onClick}
-    className={`px-6 py-2 rounded-2xl text-[10px] font-black uppercase border transition-all flex items-center gap-2 ${active ? 'bg-cyan-500 border-cyan-400 text-black' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}
-  >
-    <i className={`fas fa-${icon}`}></i>
-    {label}
-  </button>
-);
-
-const Toggle = ({ label, active, onChange }: any) => (
-  <div className="flex justify-between items-center group">
-    <span className="text-sm font-bold text-zinc-500 group-hover:text-zinc-300 transition-colors">{label}</span>
-    <button onClick={onChange} className={`w-12 h-6 rounded-full transition-all relative ${active ? 'bg-cyan-500' : 'bg-zinc-800'}`}>
-      <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all shadow-md ${active ? 'left-7' : 'left-1'}`}></div>
+const Toggle = ({ label, active, onChange, isDark }: any) => (
+  <div className={`flex justify-between items-center p-3 ${isDark ? 'bg-zinc-900/30 border-zinc-800/50' : 'bg-zinc-50 border-zinc-200'} rounded-xl border`}>
+    <span className={`text-[10px] font-black ${isDark ? 'text-zinc-400' : 'text-zinc-600'} uppercase tracking-wider`}>{label}</span>
+    <button onClick={onChange} className={`w-12 h-6 rounded-full transition-all relative ${active ? 'bg-cyan-500' : 'bg-zinc-300'}`}>
+      <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${active ? 'left-7' : 'left-1'}`}></div>
     </button>
-  </div>
-);
-
-const Overlay = ({ title, children, onClose }: any) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300">
-    <div className="w-full max-w-lg bg-[#08080a] border border-zinc-800/50 rounded-[3rem] p-8 shadow-2xl relative">
-      <div className="flex justify-between items-center mb-8 border-b border-zinc-900 pb-4">
-        <h2 className="text-lg font-black uppercase tracking-[0.2em] text-white flex items-center gap-3">
-          <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></span>
-          {title}
-        </h2>
-        <button onClick={onClose} className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-600 hover:text-white transition-all">
-          <i className="fas fa-times"></i>
-        </button>
-      </div>
-      <div className="max-h-[60vh] overflow-y-auto custom-scrollbar">
-        {children}
-      </div>
-    </div>
   </div>
 );
 

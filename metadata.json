@@ -1,5 +1,5 @@
 {
-  "name": "NEO-1: The Ultimate AI Companion",
+  "name": "NEO-1",
   "description": "A next-generation digital desktop robot inspired by EMO, featuring real-time vision, voice interaction, and expressive digital personality powered by Gemini 2.5.",
   "requestFramePermissions": [
     "camera",

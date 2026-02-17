@@ -1,9 +1,9 @@
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>NEO-1 AI Companion</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -11,7 +11,9 @@
         body {
             background-color: #050505;
             color: #e0e0e0;
-            overflow: hidden;
+            margin: 0;
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
         }
         @keyframes pulse-glow {
             0%, 100% { opacity: 0.5; filter: blur(8px); }
@@ -21,21 +23,21 @@
             box-shadow: 0 0 15px rgba(34, 211, 238, 0.5);
         }
         .animate-float {
-            animation: float 3s ease-in-out infinite;
+            animation: float 4s ease-in-out infinite;
         }
         @keyframes float {
             0%, 100% { transform: translateY(0px); }
-            50% { transform: translateY(-10px); }
+            50% { transform: translateY(-15px); }
         }
         .scanline {
             width: 100%;
             height: 2px;
-            background: rgba(34, 211, 238, 0.2);
+            background: linear-gradient(to right, transparent, rgba(34, 211, 238, 0.3), transparent);
             position: absolute;
             top: 0;
             left: 0;
             z-index: 10;
-            animation: scanline 4s linear infinite;
+            animation: scanline 6s linear infinite;
         }
         @keyframes scanline {
             0% { top: 0; }
@@ -53,7 +55,7 @@
 }
 </script>
 </head>
-<body>
+<body class="overflow-x-hidden">
     <div id="root"></div>
 </body>
 </html>
